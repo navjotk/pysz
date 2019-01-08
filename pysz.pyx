@@ -1,4 +1,7 @@
+import numpy as np
 
+from functools import reduce
+from operator import mul
 
 cdef extern from "sz.h":
      cdef int ABS
@@ -12,7 +15,18 @@ cdef extern from "sz.h":
      cdef int ABS_OR_PW_REL
      cdef int REL_AND_PW_REL
      cdef int REL_OR_PW_REL
-     
+
+     cdef int SZ_FLOAT
+     cdef int SZ_DOUBLE
+     cdef int SZ_UINT8
+     cdef int SZ_INT8
+     cdef int SZ_UINT16
+     cdef int SZ_INT16
+     cdef int SZ_UINT32
+     cdef int SZ_INT32
+     cdef int SZ_UINT64
+     cdef int SZ_INT64
+
      cdef struct sz_params:
        int dataType;
        unsigned int max_quant_intervals; #//max number of quantization intervals for quantization
@@ -63,5 +77,84 @@ cdef extern from "sz.h":
 
      cdef void SZ_Finalize();
 
-def compress():
+
+numpy_type_to_sz = {np.float32: SZ_FLOAT, np.float64: SZ_DOUBLE,
+                    np.uint8: SZ_UINT8, np.int8: SZ_INT8,
+                    np.uint16: SZ_UINT16, np.int16: SZ_INT16,
+                    np.uint32: SZ_UINT32, np.int32: SZ_INT32,
+                    np.uint64: SZ_UINT64, np.int64: SZ_INT64}
+
+
+cdef void* raw_pointer(arr) except NULL:
+    assert(arr.flags.c_contiguous) # if this isn't true, ravel will make a copy
+    cdef double[::1] mview = arr.ravel()
+    return <void*>&mview[0]
+
+
+def compress(indata, absErrBound=None, relBoundRatio=None, pwrBoundRatio=None):
+    assert(absErrBound or relBoundRatio or pwrBoundRatio)
+    compression_mode = None
+    if absErrBound is not None:
+        assert(relBoundRatio is None)
+        assert(pwrBoundRatio is None)
+        compression_mode = ABS
+
+    if relBoundRatio is not None:
+        assert(absErrBound is None)
+        assert(pwrBoundRatio is None)
+        compression_mode = REL
+
+    if pwrBoundRatio is not None:
+        assert(absErrBound is None)
+        assert(relBoundRatio is None)
+        compression_mode = PW_REL
+
+    assert(compression_mode is not None)
+
     SZ_Init_Params(NULL)
+    data_type = numpy_type_to_sz[indata.dtype]
+    data_pointer = raw_pointer(indata)
+    cdef size_t outsize, r5, r4, r3, r2, r1
+
+    if len(indata.shape) > 4:
+        r5 = reduce(mul, indata.shape[4:])
+    else:
+        r5 = 0
+
+    r4 = 0 if len(indata.shape) < 4 else indata.shape[3]
+    r3 = 0 if len(indata.shape) < 3 else indata.shape[2]
+    r2 = 0 if len(indata.shape) < 2 else indata.shape[1]
+    r1 = indata.shape[0]
+
+    compressed_data = SZ_compress_args(data_type, data_pointer, &outsize, compression_mode,
+                                       absErrBound, relBoundRatio, pwrBoundRatio, r5, r4, r3,
+                                       r2, r1)
+
+    SZ_Finalize()
+
+    return compressed_data[:outsize]
+
+
+def decompress(unsigned char* compressed, shape, dtype):
+    outdata = np.zeros(shape, dtype=dtype)
+    data_type = numpy_type_to_sz[dtype]
+    data_pointer = raw_pointer(outdata)
+
+    cdef size_t insize, r5, r4, r3, r2, r1
+
+    if len(shape) > 4:
+        r5 = reduce(mul, shape[4:])
+    else:
+        r5 = 0
+
+    r4 = 0 if len(shape) < 4 else shape[3]
+    r3 = 0 if len(shape) < 3 else shape[2]
+    r2 = 0 if len(shape) < 2 else shape[1]
+    r1 = shape[0]
+
+    insize = len(compressed)
+
+    SZ_decompress_args(data_type, <unsigned char*>&compressed, insize, data_pointer, r5, r4, r3, r2, r1)
+
+    return outdata
+
