@@ -78,11 +78,11 @@ cdef extern from "sz.h":
      cdef void SZ_Finalize();
 
 
-numpy_type_to_sz = {np.float32: SZ_FLOAT, np.float64: SZ_DOUBLE,
-                    np.uint8: SZ_UINT8, np.int8: SZ_INT8,
-                    np.uint16: SZ_UINT16, np.int16: SZ_INT16,
-                    np.uint32: SZ_UINT32, np.int32: SZ_INT32,
-                    np.uint64: SZ_UINT64, np.int64: SZ_INT64}
+numpy_type_to_sz = {np.dtype('float32'): SZ_FLOAT, np.dtype('float64'): SZ_DOUBLE,
+                    np.dtype('uint8'): SZ_UINT8, np.dtype('int8'): SZ_INT8,
+                    np.dtype('uint16'): SZ_UINT16, np.dtype('int16'): SZ_INT16,
+                    np.dtype('uint32'): SZ_UINT32, np.dtype('int32'): SZ_INT32,
+                    np.dtype('uint64'): SZ_UINT64, np.dtype('int64'): SZ_INT64}
 
 
 cdef void* raw_pointer(arr) except NULL:
@@ -91,27 +91,35 @@ cdef void* raw_pointer(arr) except NULL:
     return <void*>&mview[0]
 
 
-def compress(indata, absErrBound=None, relBoundRatio=None, pwrBoundRatio=None):
-    assert(absErrBound or relBoundRatio or pwrBoundRatio)
-    compression_mode = None
-    if absErrBound is not None:
-        assert(relBoundRatio is None)
-        assert(pwrBoundRatio is None)
+def compress(indata, tolerance=None, relRatio=None, pwrRatio=None):
+    assert(tolerance or relRatio or pwrRatio)
+    cdef int compression_mode
+    cdef double absErrBound=0, relBoundRatio=0, pwrBoundRatio=0
+    if tolerance is not None:
+        assert(relRatio is None)
+        assert(pwrRatio is None)
+
+        absErrBound = tolerance
+
         compression_mode = ABS
 
-    if relBoundRatio is not None:
-        assert(absErrBound is None)
-        assert(pwrBoundRatio is None)
+    if relRatio is not None:
+        assert(tolerance is None)
+        assert(pwrRatio is None)
+
+        relBoundRatio = relRatio
         compression_mode = REL
 
-    if pwrBoundRatio is not None:
-        assert(absErrBound is None)
-        assert(relBoundRatio is None)
+    if pwrRatio is not None:
+        assert(tolerance is None)
+        assert(relRatio is None)
+
+        pwrBoundRatio = pwrRatio
         compression_mode = PW_REL
 
     assert(compression_mode is not None)
 
-    SZ_Init_Params(NULL)
+    #SZ_Init_Params(NULL)
     data_type = numpy_type_to_sz[indata.dtype]
     data_pointer = raw_pointer(indata)
     cdef size_t outsize, r5, r4, r3, r2, r1
@@ -120,11 +128,14 @@ def compress(indata, absErrBound=None, relBoundRatio=None, pwrBoundRatio=None):
         r5 = reduce(mul, indata.shape[4:])
     else:
         r5 = 0
-
+    print(indata.shape)
     r4 = 0 if len(indata.shape) < 4 else indata.shape[3]
     r3 = 0 if len(indata.shape) < 3 else indata.shape[2]
     r2 = 0 if len(indata.shape) < 2 else indata.shape[1]
     r1 = indata.shape[0]
+
+    print(data_type, compression_mode, absErrBound, relBoundRatio,
+          pwrBoundRatio, r5, r4, r3, r2, r1)
 
     compressed_data = SZ_compress_args(data_type, data_pointer, &outsize, compression_mode,
                                        absErrBound, relBoundRatio, pwrBoundRatio, r5, r4, r3,
