@@ -3,6 +3,9 @@ import numpy as np
 from functools import reduce
 from operator import mul
 
+from libc.stdlib cimport free
+from cython cimport view
+
 cdef extern from "sz.h":
      cdef int ABS
      cdef int REL
@@ -48,8 +51,23 @@ cdef extern from "sz.h":
        int snapshotCmprStep; #//perform single-snapshot-based compression if time_step == snapshotCmprStep
        int predictionMode;
        int randomAccess;
-	  
+
+     cdef struct sz_metadata:
+       pass
+       #int versionNumber[3]; #//only used for checking the version by calling SZ_GetMetaData()
+       #int isConstant; #//only used for checking if the data are constant values by calling SZ_GetMetaData()
+       #int isLossless; #//only used for checking if the data compression was lossless, used only by calling SZ_GetMetaData()
+       #int sizeType; #//only used for checking whether the size type is "int" or "long" in the compression, used only by calling SZ_GetMetaData()
+       #size_t dataSeriesLength; #//# number of data points in the dataset
+       #int defactoNBBins; #//real number of quantization bins
+       #struct sz_params* conf_params; #//configuration parameters
+
+     cdef sz_metadata* SZ_getMetadata(unsigned char* bytes);
+     cdef void SZ_printMetadata(sz_metadata* metadata);
+
      cdef int SZ_Init_Params(sz_params *params);
+
+     cdef int SZ_Init(const char *configFilePath);
 
      cdef unsigned char *SZ_compress(int dataType, void *data, size_t *outSize, size_t r5, size_t r4, size_t r3, size_t r2, size_t r1);
 
@@ -85,10 +103,23 @@ numpy_type_to_sz = {np.dtype('float32'): SZ_FLOAT, np.dtype('float64'): SZ_DOUBL
                     np.dtype('uint64'): SZ_UINT64, np.dtype('int64'): SZ_INT64}
 
 
-cdef void* raw_pointer(arr) except NULL:
+cdef void* raw_pointer_double(arr) except NULL:
+    assert(arr.dtype==np.float64)
     assert(arr.flags.c_contiguous) # if this isn't true, ravel will make a copy
     cdef double[::1] mview = arr.ravel()
     return <void*>&mview[0]
+
+cdef void* raw_pointer_float(arr) except NULL:
+    assert(arr.flags.c_contiguous) # if this isn't true, ravel will make a copy
+    assert(arr.dtype == np.float32)
+    cdef float[::1] mview = arr.ravel()
+    return <void*>&mview[0]
+
+cdef void* raw_pointer(arr):
+    if arr.dtype == np.float32:
+        return raw_pointer_float(arr)
+    else:
+        return raw_pointer_double(arr)
 
 
 def compress(indata, tolerance=None, relRatio=None, pwrRatio=None):
@@ -117,9 +148,7 @@ def compress(indata, tolerance=None, relRatio=None, pwrRatio=None):
         pwrBoundRatio = pwrRatio
         compression_mode = PW_REL
 
-    assert(compression_mode is not None)
-
-    #SZ_Init_Params(NULL)
+    SZ_Init(NULL)
     data_type = numpy_type_to_sz[indata.dtype]
     data_pointer = raw_pointer(indata)
     cdef size_t outsize, r5, r4, r3, r2, r1
@@ -128,25 +157,25 @@ def compress(indata, tolerance=None, relRatio=None, pwrRatio=None):
         r5 = reduce(mul, indata.shape[4:])
     else:
         r5 = 0
-    print(indata.shape)
+
     r4 = 0 if len(indata.shape) < 4 else indata.shape[3]
     r3 = 0 if len(indata.shape) < 3 else indata.shape[2]
     r2 = 0 if len(indata.shape) < 2 else indata.shape[1]
     r1 = indata.shape[0]
 
-    print(data_type, compression_mode, absErrBound, relBoundRatio,
-          pwrBoundRatio, r5, r4, r3, r2, r1)
+    bufsize = indata.size * indata.itemsize
+    cdef unsigned char[::1] buff = view.array(shape=(bufsize,), itemsize=sizeof(unsigned char), format='B')
 
-    compressed_data = SZ_compress_args(data_type, data_pointer, &outsize, compression_mode,
+    compression_result = SZ_compress_args2(data_type, raw_pointer(indata), &buff[0], &outsize, compression_mode,
                                        absErrBound, relBoundRatio, pwrBoundRatio, r5, r4, r3,
                                        r2, r1)
 
     SZ_Finalize()
+    
+    return buff[:outsize]
 
-    return compressed_data[:outsize]
 
-
-def decompress(unsigned char* compressed, shape, dtype):
+def decompress(unsigned char[::1] compressed, shape, dtype):
     outdata = np.zeros(shape, dtype=dtype)
     data_type = numpy_type_to_sz[dtype]
     data_pointer = raw_pointer(outdata)
@@ -165,7 +194,6 @@ def decompress(unsigned char* compressed, shape, dtype):
 
     insize = len(compressed)
 
-    SZ_decompress_args(data_type, <unsigned char*>&compressed, insize, data_pointer, r5, r4, r3, r2, r1)
-
+    SZ_decompress_args(data_type, <unsigned char*>&compressed[0], insize, data_pointer, r5, r4, r3, r2, r1)
     return outdata
 
