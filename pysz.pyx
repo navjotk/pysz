@@ -122,7 +122,7 @@ cdef void* raw_pointer(arr):
         return raw_pointer_double(arr)
 
 
-def compress(indata, tolerance=None, relRatio=None, pwrRatio=None):
+def compress(indata, tolerance=None, relRatio=None, pwrRatio=None, parallel=True):
     assert(tolerance or relRatio or pwrRatio)
     cdef int compression_mode
     cdef double absErrBound=0, relBoundRatio=0, pwrBoundRatio=0
